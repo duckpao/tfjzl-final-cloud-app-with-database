@@ -1,50 +1,64 @@
-from django.shortcuts import get_object_or_404, render, redirect
+from django.shortcuts import render, get_object_or_404, redirect
+from django.http import HttpResponseRedirect
 from django.urls import reverse
-from .models import Course, Enrollment, Submission, Choice
+from .models import Course, Lesson, Question, Choice, Submission, Enrollment
 
+# --- Các view cũ như danh sách khóa học, login, logout giữ nguyên ---
+
+# View xử lý khi học viên ấn nút "Submit Exam"
 def submit(request, course_id):
-    course = get_object_or_404(Course, pk=course_id)
+    context = {}
     if request.method == 'POST':
-        # Lấy bản ghi Enrollment của user cho khóa học này
-        enrollment = Enrollment.objects.get(user=request.user, course=course)
-        # Tạo mới một Submission
+        course = get_object_or_404(Course, pk=course_id)
+        # Lấy thông tin đăng ký lớp học của user hiện tại
+        enrollment = get_object_or_404(Enrollment, course=course, user=request.user)
+        
+        # Tạo một bản ghi Submission mới
         submission = Submission.objects.create(enrollment=enrollment)
         
-        # Lấy tất cả các lựa chọn (choices) mà user đã tick
+        # Duyệt qua các dữ liệu POST gửi lên để gom các ID đáp án được chọn
+        selected_ids = []
         for key, value in request.POST.items():
             if key.startswith('choice_'):
-                choice_id = value
-                choice = Choice.objects.get(pk=choice_id)
+                selected_ids.append(int(value))
+                choice = get_object_or_404(Choice, pk=int(value))
                 submission.choices.add(choice)
         
         submission.save()
-        # Chuyển hướng sang trang kết quả
+        # Điều hướng sang trang hiển thị kết quả
         return redirect('onlinecourse:show_exam_result', course_id=course.id, submission_id=submission.id)
+    
+    return redirect('onlinecourse:course_details', course_id=course_id)
 
+
+# View tính toán điểm số và hiển thị kết quả bài thi
 def show_exam_result(request, course_id, submission_id):
+    context = {}
     course = get_object_or_404(Course, pk=course_id)
     submission = get_object_or_404(Submission, pk=submission_id)
     
-    # Tính điểm (tùy thuộc vào logic môn học, đây là mẫu cơ bản)
-    total_questions = course.question_set.count()
-    correct_answers = 0
+    # Tính tổng số điểm tối đa của tất cả các câu hỏi trong khóa học
+    max_score = sum([question.grade for question in course.question_set.all()])
     
+    # Lấy danh sách ID các đáp án học viên đã chọn
+    selected_ids = [choice.id for choice in submission.choices.all()]
+    
+    # Tính điểm đạt được bằng cách duyệt từng câu hỏi
+    total_score = 0
     for question in course.question_set.all():
-        # Lấy các đáp án đúng của câu hỏi
-        correct_choices = set(question.choice_set.filter(is_correct=True).values_list('id', flat=True))
-        # Lấy các đáp án user đã chọn cho câu hỏi này
-        user_choices = set(submission.choices.filter(question=question).values_list('id', flat=True))
-        
-        # Nếu user chọn đúng hoàn toàn các đáp án
-        if correct_choices == user_choices:
-            correct_answers += 1
+        if question.is_get_score(selected_ids):
+            total_score += question.grade
             
-    score = (correct_answers / total_questions) * 100 if total_questions > 0 else 0
-    passed = score >= 70 # Yêu cầu pass là 70%
+    # Kiểm tra xem có đạt (Pass) từ 70% trở lên không
+    percentage = (total_score / max_score) * 100 if max_score > 0 else 0
+    passed = percentage >= 70
     
-    context = {
-        'course': course,
-        'score': score,
-        'passed': passed,
-    }
+    # Đóng gói dữ liệu chuyển sang template hiển thị
+    context['course'] = course
+    context['submission'] = submission
+    context['total_score'] = total_score
+    context['max_score'] = max_score
+    context['percentage'] = percentage
+    context['passed'] = passed
+    
     return render(request, 'onlinecourse/exam_result_bootstrap.html', context)
